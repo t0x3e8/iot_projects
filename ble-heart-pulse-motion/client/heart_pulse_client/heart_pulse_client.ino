@@ -1,13 +1,13 @@
 /*
-ESP32 BLE Client - PING Handshake Example
-Connects to BLE Server and responds to "PING" with "PONG"
-Maintains connection and waits for server messages every 30 seconds
+ESP32 BLE Client - Heart Pulse Controller
+Simple structure with extracted LED effects
 */
 
 #include "BLEDevice.h"
+#include "led_effects.h"
 
 // LED pin definition
-const int ledPin = 0;  // GPIO pin for LED
+const int ledPin = 0;
 
 // Server identification
 static BLEUUID serviceUUID("f2e8d7c5-4b3a-9e1d-8f7c-6a5b4c3d2e1f");
@@ -25,110 +25,16 @@ static boolean firstPingReceived = false;
 
 // Timer to read server every 3 seconds
 static unsigned long lastServerRead = 0;
-static const unsigned long serverReadInterval = 3000;  // Check every 3 seconds
+static const unsigned long serverReadInterval = 3000;
 
-// Heartbeat effect variables
-bool heartbeatActive = false;
-int brightness = 0;
-int pulseState = 0;
-unsigned long previousMillis = 0;
-
-// LED control functions
-void setLEDAnalog(int brightness) {
-  analogWrite(ledPin, brightness);
-}
-
-void turnOffLED() {
-  analogWrite(ledPin, 0);
-}
-
-void startHeartbeat() {
-  heartbeatActive = true;
-  brightness = 0;
-  pulseState = 0;
-  previousMillis = millis();
-  Serial.println("💓 Starting heartbeat effect");
-}
-
-void stopHeartbeat() {
-  heartbeatActive = false;
-  brightness = 0;
-  pulseState = 0;
-  analogWrite(ledPin, 0);
-  Serial.println("💔 Stopping heartbeat effect");
-}
-
-void updateHeartbeat() {
-  if (!heartbeatActive) return;
-  
-  unsigned long currentMillis = millis();
-  
-  switch (pulseState) {
-    case 0:  // First beat rise
-      brightness += 15;
-      if (brightness >= 255) {
-        brightness = 255;
-        pulseState = 1;
-      }
-      break;
-      
-    case 1:  // First beat fall
-      brightness -= 8;
-      if (brightness <= 0) {
-        brightness = 0;
-        pulseState = 2;
-        previousMillis = currentMillis;
-      }
-      break;
-      
-    case 2:  // Pause between beats
-      if (currentMillis - previousMillis >= 120) {
-        pulseState = 3;
-      }
-      break;
-      
-    case 3:  // Second beat rise
-      brightness += 15;
-      if (brightness >= 180) {
-        brightness = 180;
-        pulseState = 4;
-      }
-      break;
-      
-    case 4:  // Second beat fall
-      brightness -= 8;
-      if (brightness <= 0) {
-        brightness = 0;
-        pulseState = 5;
-        previousMillis = currentMillis;
-      }
-      break;
-      
-    case 5:  // Long pause before next heartbeat
-      if (currentMillis - previousMillis >= 800) {
-        pulseState = 0;
-      }
-      break;
-  }
-  
-  analogWrite(ledPin, brightness);
-}
-
-// LED blink function for PING indication
-void blinkLED() {
-  for (int i = 0; i < 3; i++) {
-    analogWrite(ledPin, 255);  // Full brightness
-    delay(100);
-    analogWrite(ledPin, 0);    // Off
-    delay(100);
-  }
-}
+// Forward declaration
+void handleServerMessage(String message, bool isInitialValue = false);
 
 // Client connection callbacks
 class MyClientCallback : public BLEClientCallbacks {
   void onConnect(BLEClient *pclient) {
     Serial.println("✓ Connected to BLE Server");
-    firstPingReceived = false;  // Reset flag on new connection
+    firstPingReceived = false;
   }
 
   void onDisconnect(BLEClient *pclient) {
@@ -142,16 +48,13 @@ bool connectToServer() {
   Serial.print("🔗 Connecting to ");
   Serial.println(myDevice->getAddress().toString().c_str());
 
-  // Create BLE client
   BLEClient *pClient = BLEDevice::createClient();
   pClient->setClientCallbacks(new MyClientCallback());
 
-  // Connect to server
   pClient->connect(myDevice);
   Serial.println("✓ Connected to server");
-  pClient->setMTU(517);  // Set Maximum Transmission Unit
+  pClient->setMTU(517);
 
-  // Get the service
   BLERemoteService *pRemoteService = pClient->getService(serviceUUID);
   if (pRemoteService == nullptr) {
     Serial.println("❌ Failed to find service");
@@ -160,7 +63,6 @@ bool connectToServer() {
   }
   Serial.println("✓ Found service");
 
-  // Get the characteristic
   pRemoteCharacteristic = pRemoteService->getCharacteristic(charUUID);
   if (pRemoteCharacteristic == nullptr) {
     Serial.println("❌ Failed to find characteristic");
@@ -169,41 +71,41 @@ bool connectToServer() {
   }
   Serial.println("✓ Found characteristic");
 
-  // Read the initial value of the characteristic
   if (pRemoteCharacteristic->canRead()) {
     String value = pRemoteCharacteristic->readValue();
     Serial.print("📋 Initial characteristic value: ");
     Serial.println(value);
     
-    // Handle motion detection messages
-    if (value == "START") {
-      Serial.println("🚶 Motion detected - starting heartbeat effect");
-      startHeartbeat();
-    } else if (value == "STOP") {
-      Serial.println("🛑 Motion stopped - stopping heartbeat effect");
-      stopHeartbeat();
-    }
-    // Handle PING messages (for testing)
-    else if (value == "PING") {
-      Serial.println("👋 Initial value is PING - sending PONG response");
-      if (!firstPingReceived) {
-        Serial.println("🔥 First PING detected - blinking LED!");
-        blinkLED();  // Blink LED only on first PING
-        firstPingReceived = true;
-      } else {
-        Serial.println("📢 Subsequent PING - no blink");
-      }
-      if (pRemoteCharacteristic->canWrite()) {
-        String response = "PONG";
-        pRemoteCharacteristic->writeValue(response.c_str(), response.length());
-        Serial.println("📤 Sent: PONG");
-      }
-    }
+    handleServerMessage(value, true);
   }
 
-  // Note: Using manual polling instead of notifications for ESP32C3 compatibility
   connected = true;
   return true;
+}
+
+// Handle messages from server
+void handleServerMessage(String message, bool isInitialValue) {
+  if (message == "START") {
+    Serial.println("🚶 Motion detected - starting heartbeat effect");
+    startHeartbeat(ledPin);
+  } else if (message == "STOP") {
+    Serial.println("🛑 Motion stopped - stopping heartbeat effect");
+    stopHeartbeat(ledPin);
+  } else if (message == "PING") {
+    Serial.println("👋 Received PING - sending PONG response");
+    if (!firstPingReceived) {
+      Serial.println("🔥 First PING detected - blinking LED!");
+      blinkLED(ledPin);
+      firstPingReceived = true;
+    } else {
+      Serial.println("📢 Subsequent PING - no blink");
+    }
+    if (pRemoteCharacteristic->canWrite()) {
+      String response = "PONG";
+      pRemoteCharacteristic->writeValue(response.c_str(), response.length());
+      Serial.println("📤 Sent: PONG");
+    }
+  }
 }
 
 // Scan for advertised devices
@@ -212,7 +114,6 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
     Serial.print("🔍 Found device: ");
     Serial.println(advertisedDevice.toString().c_str());
 
-    // Check if this device has our service
     if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(serviceUUID)) {
       Serial.println("🎯 Found target server!");
       BLEDevice::getScan()->stop();
@@ -225,38 +126,32 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("🚀 Starting BLE Client - PING Handshake Responder");
+  Serial.println("🚀 Starting BLE Client - Heart Pulse Controller");
 
-  // Initialize LED pin
-  pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin, LOW);
+  initLED(ledPin);
 
-  // Initialize BLE
   BLEDevice::init("");
 
-  // Setup BLE scanning
   BLEScan *pBLEScan = BLEDevice::getScan();
   pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
-  pBLEScan->setInterval(1349); // Set scan interval in milliseconds
-  pBLEScan->setWindow(449); // Set scan window in milliseconds
+  pBLEScan->setInterval(1349);
+  pBLEScan->setWindow(449);
   pBLEScan->setActiveScan(true);
   Serial.println("🔍 Starting scan for BLE servers...");
-  pBLEScan->start(5, false); // Scan for 5 seconds, don't continue in background
+  pBLEScan->start(5, false);
 }
 
 void loop() {
-  // Handle initial connection
   if (doConnect) {
     if (connectToServer()) {
       Serial.println("🎉 Successfully connected! Reading server every 3 seconds for motion updates...");
-      lastServerRead = millis();  // Initialize server read timer
+      lastServerRead = millis();
     } else {
       Serial.println("❌ Failed to connect to server");
     }
     doConnect = false;
   }
 
-  // Read server every 3 seconds for motion updates
   if (connected) {
     unsigned long currentTime = millis();
     if (currentTime - lastServerRead >= serverReadInterval) {
@@ -267,43 +162,18 @@ void loop() {
         Serial.print("s: ");
         Serial.println(currentValue);
         
-        // Handle motion detection messages
-        if (currentValue == "START") {
-          Serial.println("🚶 Motion detected - starting heartbeat effect");
-          startHeartbeat();
-        } else if (currentValue == "STOP") {
-          Serial.println("🛑 Motion stopped - stopping heartbeat effect");
-          stopHeartbeat();
-        }
-        // Handle PING messages (for testing)
-        else if (currentValue == "PING") {
-          Serial.println("👋 Found PING via manual read - sending response");
-          if (!firstPingReceived) {
-            Serial.println("🔥 First PING detected via polling - blinking LED!");
-            blinkLED();  // Blink LED only on first PING
-            firstPingReceived = true;
-          } else {
-            Serial.println("📢 Subsequent PING via polling - no blink");
-          }
-          if (pRemoteCharacteristic->canWrite()) {
-            String response = "PONG";
-            pRemoteCharacteristic->writeValue(response.c_str(), response.length());
-            Serial.println("📤 Sent: PONG");
-          }
-        }
+        handleServerMessage(currentValue, false);
       }
       lastServerRead = currentTime;
     }
   }
 
-  // Update heartbeat effect continuously
-  updateHeartbeat();
+  updateHeartbeat(ledPin);
 
-  // Restart scanning if disconnected
   if (!connected && doScan) {
     Serial.println("🔄 Connection lost - restarting scan...");
-    BLEDevice::getScan()->start(0);  // Scan indefinitely
+    BLEDevice::getScan()->start(0);
   }
 
-  delay(1);  // Small delay for smooth heartbeat transitions
+  delay(1);
 }
