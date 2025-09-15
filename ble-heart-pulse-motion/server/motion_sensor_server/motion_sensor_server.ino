@@ -16,19 +16,28 @@ BLECharacteristic *pCharacteristic;
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
 
-// Timing for PING messages - first after 3 seconds, then every 30 seconds
-unsigned long lastPingTime = 0;
-const unsigned long firstPingDelay = 3000;   // 3 seconds for first PING
-const unsigned long pingInterval = 30000;    // 30 seconds for subsequent PINGs
-bool firstPingSent = false;
+// PIR motion sensor
+const int pirPin = 2;
+bool motionDetected = false;
+bool lastMotionState = false;
+unsigned long lastMotionCheck = 0;
+const unsigned long motionCheckInterval = 100; // Check motion every 100ms
+
+// Handshake protocol - PING first, then motion detection
+bool handshakeCompleted = false;
+bool pingSent = false;
+unsigned long connectionTime = 0;
+const unsigned long handshakeDelay = 3000; // 3 seconds after connection
 
 // Server connection callbacks
 class MyServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *pServer) {
     deviceConnected = true;
-    Serial.println("✓ Client connected - first PING will be sent in 3 seconds");
-    lastPingTime = millis();  // Reset timer on new connection
-    firstPingSent = false;    // Reset first ping flag
+    handshakeCompleted = false;
+    pingSent = false;
+    connectionTime = millis();
+    Serial.println("✓ Client connected - starting handshake protocol");
+    pCharacteristic->setValue("BLE Server Ready");
   }
 
   void onDisconnect(BLEServer *pServer) {
@@ -45,10 +54,13 @@ class MyCharacteristicCallbacks : public BLECharacteristicCallbacks {
     if (receivedMessage.length() > 0) {
       Serial.print("📨 Received: ");
       Serial.println(receivedMessage);
-
-      // Check for expected PONG response
-      if (receivedMessage == "PONG") {
-        Serial.println("🎉 Handshake completed successfully!");
+      
+      // Check for PONG response during handshake
+      if (receivedMessage == "PONG" && !handshakeCompleted) {
+        Serial.println("🎉 Handshake completed! Switching to motion detection...");
+        handshakeCompleted = true;
+        // Initialize motion state
+        lastMotionState = digitalRead(pirPin);
       }
     }
   }
@@ -58,7 +70,11 @@ class MyCharacteristicCallbacks : public BLECharacteristicCallbacks {
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("🚀 Starting BLE Server - PING Handshake every 30 seconds");
+  Serial.println("🚀 Starting BLE Server - Motion Detection");
+
+  // Initialize PIR sensor
+  pinMode(pirPin, INPUT);
+  Serial.println("📡 PIR Motion Sensor initialized on pin 2");
 
   // Initialize BLE
   BLEDevice::init("ESP32-BLE-Server");
@@ -95,14 +111,46 @@ void setup() {
 void loop() {
   unsigned long currentTime = millis();
 
-  // Send PING: first after 3 seconds, then every 30 seconds
   if (deviceConnected) {
-    unsigned long targetDelay = firstPingSent ? pingInterval : firstPingDelay;
-    if (currentTime - lastPingTime >= targetDelay) {
-      Serial.println("👋 Sending PING to client");
-      pCharacteristic->setValue("PING");
-      lastPingTime = currentTime;
-      firstPingSent = true;
+    // Phase 1: Handshake (PING-PONG)
+    if (!handshakeCompleted) {
+      // Send PING 3 seconds after connection
+      if (!pingSent && (currentTime - connectionTime >= handshakeDelay)) {
+        Serial.println("👋 Sending PING for handshake");
+        pCharacteristic->setValue("PING");
+        pingSent = true;
+      }
+    }
+    // Phase 2: Motion detection (after handshake)
+    else {
+      // Check motion sensor
+      if (currentTime - lastMotionCheck >= motionCheckInterval) {
+        motionDetected = digitalRead(pirPin);
+        
+        // Debug: Print sensor reading every 5 seconds
+        static unsigned long lastDebugTime = 0;
+        if (currentTime - lastDebugTime >= 5000) {
+          Serial.print("🔍 PIR sensor reading: ");
+          Serial.print(motionDetected);
+          Serial.print(" (pin ");
+          Serial.print(pirPin);
+          Serial.println(")");
+          lastDebugTime = currentTime;
+        }
+        
+        // Motion state changed
+        if (motionDetected != lastMotionState) {
+          if (motionDetected) {
+            Serial.println("🚶 Motion detected - sending START");
+            pCharacteristic->setValue("START");
+          } else {
+            Serial.println("🛑 Motion stopped - sending STOP");
+            pCharacteristic->setValue("STOP");
+          }
+          lastMotionState = motionDetected;
+        }
+        lastMotionCheck = currentTime;
+      }
     }
   }
 

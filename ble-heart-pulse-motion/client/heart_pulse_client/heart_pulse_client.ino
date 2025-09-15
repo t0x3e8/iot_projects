@@ -23,16 +23,103 @@ static BLEAdvertisedDevice *myDevice;
 // Flag to track first PING after connection
 static boolean firstPingReceived = false;
 
-// Debug: Add timer to manually check characteristic value
-static unsigned long lastDebugRead = 0;
-static const unsigned long debugInterval = 5000;  // Check every 5 seconds
+// Timer to read server every 3 seconds
+static unsigned long lastServerRead = 0;
+static const unsigned long serverReadInterval = 3000;  // Check every 3 seconds
+
+// Heartbeat effect variables
+bool heartbeatActive = false;
+int brightness = 0;
+int pulseState = 0;
+unsigned long previousMillis = 0;
+
+// LED control functions
+void setLEDAnalog(int brightness) {
+  analogWrite(ledPin, brightness);
+}
+
+void turnOffLED() {
+  analogWrite(ledPin, 0);
+}
+
+void startHeartbeat() {
+  heartbeatActive = true;
+  brightness = 0;
+  pulseState = 0;
+  previousMillis = millis();
+  Serial.println("💓 Starting heartbeat effect");
+}
+
+void stopHeartbeat() {
+  heartbeatActive = false;
+  brightness = 0;
+  pulseState = 0;
+  analogWrite(ledPin, 0);
+  Serial.println("💔 Stopping heartbeat effect");
+}
+
+void updateHeartbeat() {
+  if (!heartbeatActive) return;
+  
+  unsigned long currentMillis = millis();
+  
+  switch (pulseState) {
+    case 0:  // First beat rise
+      brightness += 15;
+      if (brightness >= 255) {
+        brightness = 255;
+        pulseState = 1;
+      }
+      break;
+      
+    case 1:  // First beat fall
+      brightness -= 8;
+      if (brightness <= 0) {
+        brightness = 0;
+        pulseState = 2;
+        previousMillis = currentMillis;
+      }
+      break;
+      
+    case 2:  // Pause between beats
+      if (currentMillis - previousMillis >= 120) {
+        pulseState = 3;
+      }
+      break;
+      
+    case 3:  // Second beat rise
+      brightness += 15;
+      if (brightness >= 180) {
+        brightness = 180;
+        pulseState = 4;
+      }
+      break;
+      
+    case 4:  // Second beat fall
+      brightness -= 8;
+      if (brightness <= 0) {
+        brightness = 0;
+        pulseState = 5;
+        previousMillis = currentMillis;
+      }
+      break;
+      
+    case 5:  // Long pause before next heartbeat
+      if (currentMillis - previousMillis >= 800) {
+        pulseState = 0;
+      }
+      break;
+  }
+  
+  analogWrite(ledPin, brightness);
+}
 
 // LED blink function for PING indication
 void blinkLED() {
   for (int i = 0; i < 3; i++) {
-    digitalWrite(ledPin, HIGH);
+    analogWrite(ledPin, 255);  // Full brightness
     delay(100);
-    digitalWrite(ledPin, LOW);
+    analogWrite(ledPin, 0);    // Off
     delay(100);
   }
 }
@@ -87,12 +174,24 @@ bool connectToServer() {
     String value = pRemoteCharacteristic->readValue();
     Serial.print("📋 Initial characteristic value: ");
     Serial.println(value);
-    // Check if initial value is PING and respond
-    if (value == "PING") {
+    
+    // Handle motion detection messages
+    if (value == "START") {
+      Serial.println("🚶 Motion detected - starting heartbeat effect");
+      startHeartbeat();
+    } else if (value == "STOP") {
+      Serial.println("🛑 Motion stopped - stopping heartbeat effect");
+      stopHeartbeat();
+    }
+    // Handle PING messages (for testing)
+    else if (value == "PING") {
       Serial.println("👋 Initial value is PING - sending PONG response");
       if (!firstPingReceived) {
+        Serial.println("🔥 First PING detected - blinking LED!");
         blinkLED();  // Blink LED only on first PING
         firstPingReceived = true;
+      } else {
+        Serial.println("📢 Subsequent PING - no blink");
       }
       if (pRemoteCharacteristic->canWrite()) {
         String response = "PONG";
@@ -149,30 +248,42 @@ void loop() {
   // Handle initial connection
   if (doConnect) {
     if (connectToServer()) {
-      Serial.println("🎉 Successfully connected! Waiting for PING messages every 30 seconds...");
-      lastDebugRead = millis();  // Initialize debug timer
+      Serial.println("🎉 Successfully connected! Reading server every 3 seconds for motion updates...");
+      lastServerRead = millis();  // Initialize server read timer
     } else {
       Serial.println("❌ Failed to connect to server");
     }
     doConnect = false;
   }
 
-  // Debug: Manually read characteristic value every 5 seconds to test
+  // Read server every 3 seconds for motion updates
   if (connected) {
     unsigned long currentTime = millis();
-    if (currentTime - lastDebugRead >= debugInterval) {
+    if (currentTime - lastServerRead >= serverReadInterval) {
       if (pRemoteCharacteristic->canRead()) {
         String currentValue = pRemoteCharacteristic->readValue();
-        Serial.print("🔍 Debug read at ");
+        Serial.print("📖 Reading server at ");
         Serial.print(currentTime / 1000);
         Serial.print("s: ");
         Serial.println(currentValue);
-        // If we read PING, respond (this is our backup mechanism)
-        if (currentValue == "PING") {
+        
+        // Handle motion detection messages
+        if (currentValue == "START") {
+          Serial.println("🚶 Motion detected - starting heartbeat effect");
+          startHeartbeat();
+        } else if (currentValue == "STOP") {
+          Serial.println("🛑 Motion stopped - stopping heartbeat effect");
+          stopHeartbeat();
+        }
+        // Handle PING messages (for testing)
+        else if (currentValue == "PING") {
           Serial.println("👋 Found PING via manual read - sending response");
           if (!firstPingReceived) {
+            Serial.println("🔥 First PING detected via polling - blinking LED!");
             blinkLED();  // Blink LED only on first PING
             firstPingReceived = true;
+          } else {
+            Serial.println("📢 Subsequent PING via polling - no blink");
           }
           if (pRemoteCharacteristic->canWrite()) {
             String response = "PONG";
@@ -181,9 +292,12 @@ void loop() {
           }
         }
       }
-      lastDebugRead = currentTime;
+      lastServerRead = currentTime;
     }
   }
+
+  // Update heartbeat effect continuously
+  updateHeartbeat();
 
   // Restart scanning if disconnected
   if (!connected && doScan) {
@@ -191,5 +305,5 @@ void loop() {
     BLEDevice::getScan()->start(0);  // Scan indefinitely
   }
 
-  delay(100);  // Small delay to prevent excessive CPU usage
+  delay(1);  // Small delay for smooth heartbeat transitions
 }
