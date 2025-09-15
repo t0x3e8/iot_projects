@@ -115,16 +115,19 @@ void loop() {
         
         printMotionDebug(pirPin, currentMotion);
         
-        if (currentMotion != lastMotionState) {
-          if (currentMotion) {
-            Serial.println("🚶 Motion detected - sending START");
-            pCharacteristic->setValue("START");
-          } else {
-            Serial.println("🛑 Motion stopped - sending STOP");
-            pCharacteristic->setValue("STOP");
+        // Continuously broadcast current motion state
+        if (currentMotion) {
+          pCharacteristic->setValue("START");
+          if (currentMotion != lastMotionState) {
+            Serial.println("🚶 Motion detected - continuously sending START");
           }
-          lastMotionState = currentMotion;
+        } else {
+          pCharacteristic->setValue("STOP");
+          if (currentMotion != lastMotionState) {
+            Serial.println("🛑 Motion stopped - continuously sending STOP");
+          }
         }
+        lastMotionState = currentMotion;
         lastMotionCheck = currentTime;
       }
     }
