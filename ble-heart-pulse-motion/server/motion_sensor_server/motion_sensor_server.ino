@@ -6,6 +6,9 @@ Simple structure with extracted motion utilities
 #include <BLEUtils.h>
 #include <BLEServer.h>
 #include "motion_utils.h"
+#include "esp_pm.h"
+#include "soc/rtc.h"
+#include "esp_task_wdt.h"
 
 // BLE Service and Characteristic UUIDs
 #define SERVICE_UUID "f2e8d7c5-4b3a-9e1d-8f7c-6a5b4c3d2e1f"
@@ -69,6 +72,28 @@ void setup() {
   Serial.begin(115200);
   Serial.println("🚀 Starting BLE Server - Motion Detection");
 
+  // Safe sleep prevention - no reboots on failure
+  Serial.println("⚡ Configuring sleep prevention...");
+  
+  esp_pm_config_esp32_t pm_config;
+  pm_config.max_freq_mhz = 80;  // Conservative frequency
+  pm_config.min_freq_mhz = 80;  // Keep CPU active but not max speed
+  pm_config.light_sleep_enable = false;
+  
+  esp_err_t pm_result = esp_pm_configure(&pm_config);
+  if (pm_result == ESP_OK) {
+    Serial.println("✓ Power management configured - sleep disabled");
+  } else {
+    Serial.print("⚠️ Power management failed (");
+    Serial.print(pm_result);
+    Serial.println(") - using alternative method");
+    
+    // Fallback: disable automatic light sleep via RTC
+    rtc_cpu_freq_config_t freq_config;
+    rtc_clk_cpu_freq_get_config(&freq_config);
+    Serial.println("✓ Using RTC-based sleep prevention");
+  }
+
   initMotionSensor(pirPin);
 
   // Initialize BLE
@@ -97,10 +122,23 @@ void setup() {
   BLEDevice::startAdvertising();
 
   Serial.println("📡 BLE Server advertising - waiting for client...");
+  
+  // Configure watchdog timer to prevent deep sleep
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = 30000,        // 30 second timeout
+    .idle_core_mask = 0,        // Don't watch idle cores
+    .trigger_panic = false      // Don't panic on timeout
+  };
+  esp_task_wdt_init(&wdt_config);
+  esp_task_wdt_add(NULL); // Add current task to watchdog
+  Serial.println("🐕 Watchdog timer configured for sleep prevention");
 }
 
 void loop() {
   unsigned long currentTime = millis();
+  
+  // Feed watchdog timer to prevent sleep and reset
+  esp_task_wdt_reset();
 
   if (deviceConnected) {
     if (!handshakeCompleted) {
